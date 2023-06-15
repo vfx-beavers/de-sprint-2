@@ -1,10 +1,13 @@
 -- сброс мб существующих таблиц
-drop table if exists public.shipping_agreement;
-drop table if exists public.shipping_transfer;
-drop table if exists public.shipping_status;
-drop table if exists public.shipping_info;
-drop table if exists public.shipping_country_rates;
+drop table if exists public.shipping_agreement CASCADE;
+drop table if exists public.shipping_transfer CASCADE;
+drop table if exists public.shipping_status CASCADE;
+drop table if exists public.shipping_info CASCADE;
+drop table if exists public.shipping_country_rates CASCADE;
 
+--Создание таблиц начало--
+
+-- Cправочник стоимости доставки
 -- Создаем таблицу public.shipping_country_rates с полями
 CREATE TABLE public.shipping_country_rates(
 	id SERIAL NOT NULL,
@@ -13,12 +16,7 @@ CREATE TABLE public.shipping_country_rates(
 	PRIMARY KEY (id)
 );
 
--- Заполняем пустую таблицу public.shipping_country_rates данными
-INSERT INTO public.shipping_country_rates (country, base_rate)
-select DISTINCT 
-shipping_country, shipping_country_base_rate
-FROM public.shipping s;
-
+-- Cправочник тарифов вендора по договору
 -- Создаем таблицу public.shipping_agreement с полями
 CREATE TABLE public.shipping_agreement(
 	agreement_id int NOT NULL,
@@ -28,17 +26,7 @@ CREATE TABLE public.shipping_agreement(
 	PRIMARY KEY (agreement_id)
 );
 
--- Заполняем пустую таблицу public.shipping_agreement данными
-INSERT INTO public.shipping_agreement (agreement_id, agreement_number, agreement_rate, agreement_commission)
-SELECT 
-	DISTINCT
-	(regexp_split_to_array(vendor_agreement_description, ':'))[1]::int as agreement_id,
-	(regexp_split_to_array(vendor_agreement_description, ':'))[2]::text as agreement_number,
-	(regexp_split_to_array(vendor_agreement_description, ':'))[3]::NUMERIC(14,3) as agreement_rate,
-	(regexp_split_to_array(vendor_agreement_description, ':'))[4]::NUMERIC(14,3)as agreement_commission
-FROM public.shipping s 
-ORDER BY 1;
-
+-- Cправочник с типами доставки
 -- Создаем таблицу public.shipping_transfer с полями
 CREATE TABLE public.shipping_transfer(
 	id serial NOT NULL,
@@ -48,16 +36,7 @@ CREATE TABLE public.shipping_transfer(
 	PRIMARY KEY (id)
 );
 
--- Заполняем пустую таблицу public.shipping_transfer данными
-INSERT INTO public.shipping_transfer(transfer_type,transfer_model,shipping_transfer_rate)
-SELECT 
-	DISTINCT 
-	(regexp_split_to_array(shipping_transfer_description, ':'))[1] as transfer_type,
-	(regexp_split_to_array(shipping_transfer_description, ':'))[2] as transfer_model,
-	shipping_transfer_rate
-FROM public.shipping s
-ORDER BY 1;
-
+-- Cправочник сборный
 -- Создаем таблицу public.shipping_info с полями
 CREATE TABLE public.shipping_info(
 	shipping_id int8 NOT NULL,
@@ -72,6 +51,46 @@ CREATE TABLE public.shipping_info(
 	FOREIGN KEY (shipping_country_id) REFERENCES public.shipping_country_rates(id) ON UPDATE CASCADE,
 	FOREIGN KEY (agreement_id) REFERENCES public.shipping_agreement(agreement_id) ON UPDATE CASCADE
 );
+
+-- Cправочник с последним статусом о доставке
+-- Создаем таблицу public.shipping_status с полями
+CREATE TABLE public.shipping_status(
+	shipping_id int8 NOT NULL,
+	status TEXT,
+	state TEXT,
+	shipping_start_fact_datetime timestamp,
+	shipping_end_fact_datetime timestamp
+);
+--Создание таблиц конец--
+
+--Заполнение таблиц начало--
+
+-- Заполняем пустую таблицу public.shipping_country_rates данными
+INSERT INTO public.shipping_country_rates (country, base_rate)
+select DISTINCT 
+shipping_country, shipping_country_base_rate
+FROM public.shipping s;
+
+-- Заполняем пустую таблицу public.shipping_agreement данными
+INSERT INTO public.shipping_agreement (agreement_id, agreement_number, agreement_rate, agreement_commission)
+SELECT 
+	DISTINCT
+	(regexp_split_to_array(vendor_agreement_description, ':'))[1]::int as agreement_id,
+	(regexp_split_to_array(vendor_agreement_description, ':'))[2]::text as agreement_number,
+	(regexp_split_to_array(vendor_agreement_description, ':'))[3]::NUMERIC(14,3) as agreement_rate,
+	(regexp_split_to_array(vendor_agreement_description, ':'))[4]::NUMERIC(14,3)as agreement_commission
+FROM public.shipping s 
+ORDER BY 1;
+
+-- Заполняем пустую таблицу public.shipping_transfer данными
+INSERT INTO public.shipping_transfer(transfer_type,transfer_model,shipping_transfer_rate)
+SELECT 
+	DISTINCT 
+	(regexp_split_to_array(shipping_transfer_description, ':'))[1] as transfer_type,
+	(regexp_split_to_array(shipping_transfer_description, ':'))[2] as transfer_model,
+	shipping_transfer_rate
+FROM public.shipping s
+ORDER BY 1;
 
 -- Заполняем пустую таблицу public.shipping_info данными
 INSERT INTO public.shipping_info(shipping_id, 
@@ -100,14 +119,9 @@ LEFT JOIN public.shipping_agreement ship_ag
 	ON (regexp_split_to_array(vendor_agreement_description, ':'))[1]::int8 = ship_ag.agreement_id 
 ORDER BY shipping_id;
 
--- Создаем таблицу public.shipping_status с полями
-CREATE TABLE public.shipping_status(
-	shipping_id int8 NOT NULL,
-	status TEXT,
-	state TEXT,
-	shipping_start_fact_datetime timestamp,
-	shipping_end_fact_datetime timestamp
-);
+--Заполнение таблиц конец--
+
+--Выборка начало--
 
 -- последний статус каждого shipping_id
 WITH ship_last_states AS(
@@ -117,6 +131,7 @@ SELECT
 	s.state,
 	s.state_datetime,
 	ROW_NUMBER() over(PARTITION BY s.shippingid ORDER BY s.state_datetime desc) AS state_order_desc 
+--  FIRST_VALUE (status) OVER (PARTITION BY shippingid ORDER BY state_datetime DESC)	
 FROM public.shipping s
 ORDER BY s.shippingid),
 -- получаем дату старта доставки
@@ -143,7 +158,10 @@ LEFT JOIN ship_recieved_state_datetime srsd ON sls.shipping_id = srsd.shipping_i
 WHERE state_order_desc = 1
 ORDER BY sls.shipping_id;
 
--- создание представления
+--Выборка конец--
+
+--Создание представления начало--
+
 DROP VIEW IF EXISTS public.shipping_datamart;
 CREATE VIEW public.shipping_datamart AS
 SELECT 
@@ -174,3 +192,5 @@ JOIN shipping_agreement sa ON sa.agreement_id = si.agreement_id
 JOIN shipping_country_rates scr ON scr.id = si.shipping_country_id 
 ORDER BY si.shipping_id
 ;
+
+--Создание представления конец--
